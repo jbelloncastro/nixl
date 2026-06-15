@@ -19,8 +19,11 @@ cufile.log
 # clangd
 .cache/
 
-# Asio
-subprojects/asio-*
+# Ignore subproject non-tracked files and sub-directories
+subprojects/*
+!subprojects/packagefiles/
+!subprojects/*.wrap
 
-# liburing
-subprojects/liburing-*
+# Local Python environments
+.venv/
+.venv*/
