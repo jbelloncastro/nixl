@@ -27,6 +27,9 @@
 template<typename Derived>
 class FileMtEngineBase : public nixlBackendEngine {
 public:
+    explicit FileMtEngineBase(const nixlBackendInitParams *init_params)
+        : nixlBackendEngine(init_params) {}
+
     bool
     supportsNotif() const override {
         return false;

@@ -193,7 +193,7 @@ nixlAisMtBackendReqH::~nixlAisMtBackendReqH() {
 }
 
 nixlAisMtEngine::nixlAisMtEngine(const nixlBackendInitParams *init_params)
-    : nixlBackendEngine(init_params),
+    : FileMtEngineBase<nixlAisMtEngine>(init_params),
       ais_mt_utils_(),
       thread_count_(getThreadCount(init_params)),
       executor_(std::make_unique<tf::Executor>(thread_count_)) {
