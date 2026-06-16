@@ -54,6 +54,7 @@ if enabled_plugins.get('GDS')
     endif
 endif
 
+mt_plugins_enter = false
 if enabled_plugins.get('GDS_MT')
     if (disable_gds_backend or not cuda_dep.found() or not taskflow_proj.found()) and is_explicit_enable
         if disable_gds_backend
@@ -64,8 +65,27 @@ if enabled_plugins.get('GDS_MT')
             error('GDS_MT plugin requested but Taskflow dependency not found')
         endif
     elif not disable_gds_backend and cuda_dep.found() and taskflow_proj.found()
-        subdir('gds_mt')
+        mt_plugins_enter = true
     endif
+endif
+
+disable_rocm_ais_backend = get_option('disable_rocm_ais_backend')
+if enabled_plugins.get('AIS_MT')
+    if (disable_rocm_ais_backend or not hip_dep.found() or not taskflow_proj.found()) and is_explicit_enable
+        if disable_rocm_ais_backend
+            error('AIS_MT plugin requested but AIS_MT hipFile support is disabled (-Ddisable_rocm_ais_backend=true)')
+        elif not hip_dep.found()
+            error('AIS_MT plugin requested but HIP/ROCm dependency not found')
+        else
+            error('AIS_MT plugin requested but Taskflow dependency not found')
+        endif
+    elif not disable_rocm_ais_backend and hip_dep.found() and taskflow_proj.found()
+        mt_plugins_enter = true
+    endif
+endif
+
+if mt_plugins_enter
+    subdir('mt')
 endif
 
 cc = meson.get_compiler('cpp')

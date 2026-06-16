@@ -25,10 +25,11 @@
 #include <string>
 #include <unordered_map>
 #include <cufile.h>
+#include "file_mt_engine_base.hpp"
 #include "gds_mt_utils.h"
 #include "taskflow/core/executor.hpp"
 
-class nixlGdsMtEngine : public nixlBackendEngine {
+class nixlGdsMtEngine : public FileMtEngineBase<nixlGdsMtEngine> {
 public:
     nixlGdsMtEngine (const nixlBackendInitParams *init_params);
     // Note: The destructor of the TaskFlow executor runs wait_for_all() to
@@ -40,44 +41,6 @@ public:
     nixlGdsMtEngine &
     operator= (const nixlGdsMtEngine &) = delete;
 
-    bool
-    supportsNotif() const override {
-        return false;
-    }
-    bool
-    supportsRemote() const override {
-        return false;
-    }
-    bool
-    supportsLocal() const override {
-        return true;
-    }
-
-    nixl_mem_list_t
-    getSupportedMems() const override {
-        return {DRAM_SEG, VRAM_SEG, FILE_SEG};
-    }
-
-    nixl_status_t
-    connect (const std::string &remote_agent) override {
-        return NIXL_SUCCESS;
-    }
-
-    nixl_status_t
-    disconnect (const std::string &remote_agent) override {
-        return NIXL_SUCCESS;
-    }
-
-    nixl_status_t
-    loadLocalMD (nixlBackendMD *input, nixlBackendMD *&output) override {
-        output = input;
-        return NIXL_SUCCESS;
-    }
-
-    nixl_status_t
-    unloadMD (nixlBackendMD *input) override {
-        return NIXL_SUCCESS;
-    }
     nixl_status_t
     registerMem (const nixlBlobDesc &mem, const nixl_mem_t &nixl_mem, nixlBackendMD *&out) override;
     nixl_status_t

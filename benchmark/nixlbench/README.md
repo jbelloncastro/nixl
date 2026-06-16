@@ -498,8 +498,12 @@ sudo systemctl start etcd && sudo systemctl enable etcd
 
 **GDS_MT Backend:**
 ```
---gds_mt_num_threads NUM   # Number of threads used by GDS MT plugin (default: 1)
+--gds_mt_num_threads NUM   # Number of threads used by GDS_MT plugin (default: 1)
 ```
+
+**AIS_MT Backend:** Same `--gds_mt_num_threads` flag controls the Taskflow pool for
+`AIS_MT` (sources live under `src/plugins/mt/ais/` with shared helpers in
+`src/plugins/mt/common/`).
 
 **POSIX Backend:**
 ```

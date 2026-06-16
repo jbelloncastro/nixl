@@ -21,7 +21,6 @@ if gds_path != ''
         link_args: ['-L' + gds_lib_path, '-lcufile'],
         include_directories: include_directories(gds_inc_path))
 else
-    # Create a dummy dependency that does nothing
     cufile_dep = declare_dependency()
     subdir_done()
 endif
@@ -31,21 +30,23 @@ if 'GDS_MT' in static_plugins
         'gds_mt_utils.cpp', 'gds_mt_utils.h',
         'gds_mt_backend.cpp', 'gds_mt_backend.h',
         'gds_mt_plugin.cpp',
-        dependencies: [nixl_infra, nixl_common_dep, cuda_dep, cufile_dep, taskflow_proj, file_utils_interface],
+        dependencies: [nixl_infra, nixl_common_dep, cuda_dep, cufile_dep, taskflow_proj,
+            file_utils_interface, file_mt_common_dep],
         include_directories: [nixl_inc_dirs, utils_inc_dirs],
         install: false,
         cpp_args: compile_flags,
-        name_prefix: 'libplugin_')  # Custom prefix for plugin libraries
+        name_prefix: 'libplugin_')
 else
     gds_mt_backend_lib = shared_library('GDS_MT',
         'gds_mt_utils.cpp', 'gds_mt_utils.h',
         'gds_mt_backend.cpp', 'gds_mt_backend.h',
         'gds_mt_plugin.cpp',
-        dependencies: [nixl_infra, nixl_common_dep, cuda_dep, cufile_dep, taskflow_proj, file_utils_interface],
+        dependencies: [nixl_infra, nixl_common_dep, cuda_dep, cufile_dep, taskflow_proj,
+            file_utils_interface, file_mt_common_dep],
         include_directories: [nixl_inc_dirs, utils_inc_dirs],
         install: true,
         cpp_args: ['-fPIC'],
-        name_prefix: 'libplugin_',  # Custom prefix for plugin libraries
+        name_prefix: 'libplugin_',
         install_dir: plugin_install_dir,
         install_rpath: '$ORIGIN/..')
     if get_option('buildtype') == 'debug'

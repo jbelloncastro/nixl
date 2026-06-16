@@ -191,6 +191,7 @@ so CI images that install both stacks build one binary with `HAVE_CUDA` and
 **Plugins on ROCm hosts (CUDA toolchain absent):**
 - `UCX` — primary transport for AMD GPU memory (requires UCX built with `--with-rocm`).
 - `POSIX`, `OBJ`, `AZURE_BLOB`, `HF3FS`, `MOONCAKE`, `GUSLI`, `UCCL` — vendor-neutral; build unchanged.
+- `AIS_MT` — AMD Infinity Storage (hipFile) multi-threaded plugin; sources under `src/plugins/mt/ais/` (shared helpers in `src/plugins/mt/common/`). See `disable_rocm_ais_backend` and `rocm_ais_path` in `meson_options.txt`.
 - `GDS` / `GDS_MT`, `GPUNETIO`, `LIBFABRIC` (with `-DHAVE_CUDA`) — skip automatically because their CUDA / cuFile / DOCA dependencies are not found.
 
 **Known gaps (will be addressed in follow-up PRs):**
