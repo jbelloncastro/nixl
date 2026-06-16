@@ -188,11 +188,11 @@ so CI images that install both stacks build one binary with `HAVE_CUDA` and
 (configure fails if HIP is missing). When packaging a ROCm wheel, pass
 `-Dwheel_variant=rocm` so the wheel is named `nixl_rocm`.
 
-**Plugins on ROCm hosts (CUDA toolchain absent):**
+**Platforms using ROCm / HIP (ROCm-only or CUDA + ROCm co-installed):**
 - `UCX` — primary transport for AMD GPU memory (requires UCX built with `--with-rocm`).
 - `POSIX`, `OBJ`, `AZURE_BLOB`, `HF3FS`, `MOONCAKE`, `GUSLI`, `UCCL` — vendor-neutral; build unchanged.
-- `AIS_MT` — AMD Infinity Storage (hipFile) multi-threaded plugin; sources under `src/plugins/mt/ais/` (shared helpers in `src/plugins/mt/common/`). See `disable_rocm_ais_backend` and `rocm_ais_path` in `meson_options.txt`.
-- `GDS` / `GDS_MT`, `GPUNETIO`, `LIBFABRIC` (with `-DHAVE_CUDA`) — skip automatically because their CUDA / cuFile / DOCA dependencies are not found.
+- `AIS_MT` — AMD Infinity Storage (hipFile) multi-threaded plugin under `src/plugins/mt/ais/` (shared helpers in `src/plugins/mt/common/`). HIP is detected independently of CUDA, so **AIS_MT** can be built alongside CUDA plugins when ROCm and hipFile are present. See `disable_rocm_ais_backend` and `rocm_ais_path` in `meson_options.txt`.
+- `GDS` / `GDS_MT`, `GPUNETIO`, `LIBFABRIC` (with `-DHAVE_CUDA`) — on a ROCm-only host they skip automatically when CUDA / cuFile / DOCA are not found.
 
 **Known gaps (will be addressed in follow-up PRs):**
 - `nixlbench`: NVSHMEM and the CUDA-driver VMM/fabric helpers remain
