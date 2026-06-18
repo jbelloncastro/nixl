@@ -21,12 +21,8 @@
 #include <cctype>
 #include <chrono>
 #include <cstring>
-#if HAVE_CUDA
-#include <cuda.h>
-#include <cuda_runtime.h>
-#elif HAVE_ROCM
-#include <hip/hip_runtime.h>
-#endif
+/* CUDA/HIP: include only via headers that load toml++ before HIP (see utils.h).
+ * Early hip_runtime.h breaks toml++ on GCC + ROCm (__noinline__ macro). */
 #include <fcntl.h>
 #include <filesystem>
 #include <iomanip>
@@ -50,9 +46,7 @@
 
 static nixl_mem_t
 resolveVramSegment() {
-#if HAVE_CUDA
-    return VRAM_SEG;
-#elif HAVE_ROCM
+#if HAVE_CUDA || HAVE_ROCM
     return VRAM_SEG;
 #else
     if (neuronCoreCount() > 0) return VRAM_SEG;
