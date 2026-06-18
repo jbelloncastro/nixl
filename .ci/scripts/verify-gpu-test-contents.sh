@@ -15,7 +15,8 @@
 # License.
 #
 # Run inside a gpu-test (or similar) image to sanity-check NIXL install layout,
-# nixlbench binaries, the UCX plugin, and UCX CUDA/ROCm transport libraries.
+# nixlbench binaries, the UCX plugin, UCX CUDA/ROCm transport libraries, hipFile
+# libraries, the AIS_MT plugin, and the ais-stats CLI from rocm-systems hipFile.
 #
 # Usage (from repo host, image need not include this file yet):
 #   docker run --rm -v "$PWD/.ci/scripts/verify-gpu-test-contents.sh:/tmp/v.sh:ro" \
@@ -23,6 +24,11 @@
 #
 # After a gpu-test build with COPY . ., the script also lives under:
 #   /workspace/nixl/.ci/scripts/verify-gpu-test-contents.sh
+#
+# Optional environment (inside the container):
+#   VERIFY_HIPFILE_LIB_ROOTS — space-separated prefixes (each has lib/ scanned
+#     for libhipfile.so*). Default: ${ROCM_PATH:-/opt/rocm} /opt/rocs-ais /usr/local
+#   VERIFY_AIS_STATS_BIN — explicit path to ais-stats when not in PATH
 
 set -euo pipefail
 
@@ -51,8 +57,38 @@ case "$arch" in
     *) libarch="$arch-linux-gnu" ;;
 esac
 
+ais_mt_plugin="${P}/lib/${libarch}/plugins/libplugin_AIS_MT.so"
 PLUG="${P}/lib/${libarch}/plugins"
 ROCM="${ROCM_PATH:-/opt/rocm}"
+
+# Optional: space-separated list of install prefixes to search for libhipfile.so*
+# under <prefix>/lib (Meson AIS_MT search: ROCM_PATH, /opt/rocs-ais, /usr/local).
+if [[ -n "${VERIFY_HIPFILE_LIB_ROOTS:-}" ]]; then
+    # shellcheck disable=SC2206
+    HIPFILE_LIB_ROOTS=( ${VERIFY_HIPFILE_LIB_ROOTS} )
+else
+    HIPFILE_LIB_ROOTS=( "${ROCM}" /opt/rocs-ais /usr/local )
+fi
+
+_find_ais_stats_bin() {
+    if [[ -n "${VERIFY_AIS_STATS_BIN:-}" && -x "${VERIFY_AIS_STATS_BIN}" ]]; then
+        printf '%s\n' "${VERIFY_AIS_STATS_BIN}"
+        return 0
+    fi
+    local p
+    for p in "${ROCM}/bin/ais-stats" "/opt/rocs-ais/bin/ais-stats"; do
+        if [[ -x "$p" ]]; then
+            printf '%s\n' "$p"
+            return 0
+        fi
+    done
+    local _path="${ROCM}/bin:/opt/rocs-ais/bin:${PATH:-}"
+    if PATH="${_path}" command -v ais-stats >/dev/null 2>&1; then
+        PATH="${_path}" command -v ais-stats
+        return 0
+    fi
+    return 1
+}
 
 section "Install prefix"
 if [[ ! -d "$P" ]]; then
@@ -76,6 +112,25 @@ if [[ ! -d "$PLUG" ]]; then
 else
     echo "OK: $PLUG ($(find "$PLUG" -maxdepth 1 -name 'libplugin_*.so' | wc -l) plugins)"
     ls -la "$PLUG"/libplugin_*.so 2>/dev/null || note_warn "no libplugin_*.so in $PLUG"
+fi
+
+_have_rocm_hip=0
+if ls "${ROCM}/lib"/libamdhip64.so* >/dev/null 2>&1; then
+    _have_rocm_hip=1
+fi
+
+section "hipFile libraries (libhipfile)"
+_have_hipfile=0
+for root in "${HIPFILE_LIB_ROOTS[@]}"; do
+    [[ -d "${root}/lib" ]] || continue
+    while IFS= read -r -d '' hf; do
+        _have_hipfile=1
+        echo "OK: $hf"
+        ls -la "$hf" 2>/dev/null || true
+    done < <(find "${root}/lib" -maxdepth 1 \( -name 'libhipfile.so' -o -name 'libhipfile.so.*' \) -print0 2>/dev/null || true)
+done
+if [[ "$_have_hipfile" -eq 0 ]]; then
+    echo "OK: no libhipfile under searched roots (${HIPFILE_LIB_ROOTS[*]})"
 fi
 
 section "UCX backend plugin"
@@ -131,6 +186,35 @@ else
         note_warn "no ${P}/bin/nixlbench-rocm (expected when CUDA+ROCm dual nixlbench ran)"
     else
         echo "OK: no nixlbench-rocm (ROCm HIP not expected in this image)"
+    fi
+fi
+
+section "AIS_MT plugin (ROCm / hipFile)"
+if [[ -f "$ais_mt_plugin" ]]; then
+    echo "OK: $ais_mt_plugin"
+    file "$ais_mt_plugin" || true
+elif [[ "$_have_rocm_hip" -eq 1 ]] && [[ "$_have_hipfile" -eq 1 ]]; then
+    note_fail "missing $ais_mt_plugin but HIP and libhipfile are present (expect AIS_MT built)"
+elif [[ "$_have_rocm_hip" -eq 1 ]] && [[ "$_have_hipfile" -eq 0 ]]; then
+    note_warn "ROCm HIP present but no libhipfile (e.g. aarch64 stub); AIS_MT not expected"
+else
+    echo "OK: AIS_MT not required (no full ROCm + hipFile layout)"
+fi
+
+section "ais-stats (hipFile stats CLI)"
+# Built when rocm-systems hipFile is configured with AIS_INSTALL_TOOLS (see
+# upstream tools/ais-stats). VERIFY_AIS_STATS_BIN overrides discovery.
+_ais_stats_bin=
+if _ais_stats_bin="$(_find_ais_stats_bin)" && [[ -n "$_ais_stats_bin" ]]; then
+    echo "OK: ${_ais_stats_bin}"
+    file "$_ais_stats_bin" || true
+else
+    if [[ -f "$ais_mt_plugin" ]]; then
+        note_fail "AIS_MT present but ais-stats not found (install hipFile tools; set VERIFY_AIS_STATS_BIN=...)"
+    elif [[ "$_have_rocm_hip" -eq 1 ]] && [[ "$_have_hipfile" -eq 1 ]]; then
+        note_warn "HIP + libhipfile present but ais-stats not on PATH or under ${ROCM}/bin (optional tooling)"
+    else
+        echo "OK: ais-stats not required (no AIS_MT / hipFile test stack)"
     fi
 fi
 
