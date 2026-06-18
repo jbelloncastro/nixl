@@ -164,10 +164,29 @@ Common build options:
 - `enable_plugins`: Comma-separated list of plugins to build (e.g. `-Denable_plugins=UCX,POSIX`). Cannot be used with `disable_plugins`.
 - `disable_plugins`: Comma-separated list of plugins to exclude (e.g. `-Ddisable_plugins=GDS`). Cannot be used with `enable_plugins`.
 - `wheel_variant`: Override the Python wheel variant suffix (e.g. `-Dwheel_variant=rocm` yields `nixl_rocm`). Empty (default) = autodetect from the CUDA major version.
+- CI base image ([`.ci/dockerfiles/Dockerfile.base`](.ci/dockerfiles/Dockerfile.base)):
+  Copies `/opt/rocm` from `ROCM_IMAGE` (default
+  `docker.io/rocm/dev-ubuntu-24.04:7.2`). The first `/.gitlab/build.sh` run
+  installs dependencies with UCX and NIXL skipped (`PRE_INSTALLED_UCX_ENV` and
+  `PRE_INSTALLED_NIXL_ENV`); that step builds hipFile from ROCm/rocm-systems
+  into `/opt/rocm` on x86_64 (`ROCSYSTEMS_REF`, `SKIP_ROCM_HIPFILE`). aarch64
+  keeps an empty stub under `/opt/rocm`. [`.ci/scripts/common.sh`](.ci/scripts/common.sh)
+  adds UCX `--with-rocm` when `libamdhip64` is present under `/opt/rocm/lib`.
+  CI passes `--build-arg INFINIA_LIBS_IMAGE` for the Harbor `infinia-libs`
+  image; for a local empty layout use
+  [`.ci/dockerfiles/Dockerfile.infinia-stub`](.ci/dockerfiles/Dockerfile.infinia-stub)
+  and point `INFINIA_LIBS_IMAGE` at that tag.
 
 #### Building for AMD ROCm
 
-NIXL itself builds vendor-neutrally; CPU-side hardware detection (`hwInfo::numAmdGpus`) discovers AMD GPUs via PCI vendor `0x1002` whether or not a ROCm toolchain is present. GPU-side ROCm/HIP build support for the benchmark suite lives in nixlbench — see PR #1647 for the `use_rocm` / `rocm_path` options there. When packaging a ROCm wheel, pass `-Dwheel_variant=rocm` so the wheel is named `nixl_rocm`.
+NIXL itself builds vendor-neutrally; CPU-side hardware detection
+(`hwInfo::numAmdGpus`) discovers AMD GPUs via PCI vendor `0x1002` whether or
+not a ROCm toolchain is present. In `benchmark/nixlbench`, Meson links HIP when
+`amdhip64` is found under `rocm_path` (default `/opt/rocm`) and CUDA when found,
+so CI images that install both stacks build one binary with `HAVE_CUDA` and
+`HAVE_ROCM` when both deps resolve. Pass `-Duse_rocm=true` to require ROCm
+(configure fails if HIP is missing). When packaging a ROCm wheel, pass
+`-Dwheel_variant=rocm` so the wheel is named `nixl_rocm`.
 
 **Plugins on ROCm hosts (CUDA toolchain absent):**
 - `UCX` — primary transport for AMD GPU memory (requires UCX built with `--with-rocm`).
@@ -175,7 +194,8 @@ NIXL itself builds vendor-neutrally; CPU-side hardware detection (`hwInfo::numAm
 - `GDS` / `GDS_MT`, `GPUNETIO`, `LIBFABRIC` (with `-DHAVE_CUDA`) — skip automatically because their CUDA / cuFile / DOCA dependencies are not found.
 
 **Known gaps (will be addressed in follow-up PRs):**
-- `nixlbench` (the NIXL benchmark tool) needs CUDA-driver-API → HIP translation work before it builds on ROCm. Use `examples/cpp/nixl_etcd_example` for transfer validation in the meantime.
+- `nixlbench`: NVSHMEM and the CUDA-driver VMM/fabric helpers remain
+  NVIDIA-only; VRAM allocation prefers CUDA when both stacks are present.
 - `LIBFABRIC` plugin disabled on ROCm pending header refactor.
 - No NVSHMEM-equivalent backend yet (rocSHMEM analog is a candidate for a future plugin).
 
