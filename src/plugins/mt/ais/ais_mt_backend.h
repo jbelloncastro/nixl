@@ -18,7 +18,7 @@
 #include "ais_mt_utils.h"
 #include "taskflow/core/executor.hpp"
 
-class nixlAisMtEngine : public FileMtEngineBase<nixlAisMtEngine> {
+class nixlAisMtEngine final : public FileMtEngineBase<nixlAisMtEngine> {
 public:
     nixlAisMtEngine(const nixlBackendInitParams *init_params);
     ~nixlAisMtEngine() = default;

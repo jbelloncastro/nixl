@@ -37,43 +37,48 @@ struct FileSegData {
 };
 
 struct MemSegData {
-    std::unique_ptr<aisMtMemBuf> buf;
+    aisMtMemBuf buf;
 
     MemSegData(void *addr, size_t size, int flags)
-        : buf(std::make_unique<aisMtMemBuf>(addr, size, flags)) {}
+        : buf(addr, size, flags) {}
 };
 
 struct AisMtTransferRequestH {
-    AisMtTransferRequestH(void *a,
-                                 size_t s,
-                                 size_t offset,
-                                 hipFileHandle_t handle,
-                                 hipFileOpcode_t operation,
-                                 int device_id)
-        : addr{a},
-          size{s},
-          file_offset{offset},
+    AisMtTransferRequestH(void *address,
+                          size_t size,
+                          size_t buffer_offset,
+                          size_t file_offset,
+                          hipFileHandle_t handle,
+                          hipFileOpcode_t operation,
+                          int device_id)
+        : addr{address},
+          size{size},
+          buffer_offset{buffer_offset},
+          file_offset{file_offset},
           fh{handle},
           op{operation},
-          dev_id{device_id} {}
+          dev_id{device_id}
+    {
+    }
 
     void *addr;
     size_t size;
+    size_t buffer_offset;
     size_t file_offset;
     hipFileHandle_t fh;
     hipFileOpcode_t op;
     int dev_id;
 };
 
-class nixlAisMtMetadata : public nixlBackendMD {
+class nixlAisMtMetadata final : public nixlBackendMD {
 public:
     explicit nixlAisMtMetadata(std::shared_ptr<aisMtFileHandle> file_handle)
         : nixlBackendMD(true),
-          data_(FileSegData{std::move(file_handle)}) {}
+          data_(std::in_place_type<FileSegData>, std::move(file_handle)) {}
 
     explicit nixlAisMtMetadata(void *addr, size_t size, int flags)
         : nixlBackendMD(true),
-          data_(MemSegData{addr, size, flags}) {}
+          data_(std::in_place_type<MemSegData>, addr, size, flags) {}
 
     ~nixlAisMtMetadata() = default;
 
@@ -88,14 +93,16 @@ public:
     std::variant<FileSegData, MemSegData> data_;
 };
 
-class nixlAisMtBackendReqH : public nixlBackendReqH {
+class nixlAisMtBackendReqH final : public nixlBackendReqH {
 public:
+    explicit nixlAisMtBackendReqH(std::vector<AisMtTransferRequestH> list);
     ~nixlAisMtBackendReqH();
 
     std::vector<AisMtTransferRequestH> request_list;
     tf::Taskflow taskflow;
-    std::future<void> running_transfer;
-    std::atomic<nixl_status_t> overall_status;
+    std::future<nixl_status_t> running_transfer;
+
+    nixl_status_t run();
 };
 
 size_t
@@ -120,76 +127,102 @@ getThreadCount(const nixlBackendInitParams *init_params) {
     return thread_count;
 }
 
-void
-runHipFileOp(AisMtTransferRequestH *req, std::atomic<nixl_status_t> *overall_status) {
-    if (req->dev_id >= 0) {
-        const hipError_t dev_err = hipSetDevice(req->dev_id);
+void reportOpError(const char *msg, hipError_t error) {
+  NIXL_ERROR << msg << hipGetErrorString(error);
+}
+
+void reportOpError(const char *msg, ssize_t error) {
+  if (error == -1) {
+    NIXL_ERROR << msg << strerror(errno);
+  } else {
+    reportOpError(msg, static_cast<hipFileOpError_t>(abs(error)));
+  }
+}
+
+nixl_status_t
+runHipFileOp(AisMtTransferRequestH &req) {
+    if (req.dev_id >= 0) {
+        const hipError_t dev_err = hipSetDevice(req.dev_id);
         if (dev_err != hipSuccess) {
-            NIXL_ERROR << "AIS_MT: hipSetDevice failed: " << hipGetErrorString(dev_err);
-            overall_status->store(NIXL_ERR_BACKEND);
-            return;
+            reportOpError("AIS_MT: hipSetDevice failed: ", dev_err);
+            return NIXL_ERR_BACKEND;
         }
     }
 
     ssize_t nbytes = 0;
-    if (req->op == hipFileBatchRead) {
-        nbytes = hipFileRead(req->fh, req->addr, req->size, req->file_offset, 0);
+    if (req.op == hipFileBatchRead) {
+        nbytes = hipFileRead(req.fh, req.addr, req.size, req.file_offset, 0);
         if (nbytes < 0) {
-            NIXL_ERROR << "AIS_MT: hipFileRead failed: " << strerror(errno);
-            overall_status->store(NIXL_ERR_BACKEND);
-            return;
+            reportOpError("AIS_MT: hipFileRead failed: ", nbytes);
+            return NIXL_ERR_BACKEND;
         }
-    } else if (req->op == hipFileBatchWrite) {
-        nbytes = hipFileWrite(req->fh, req->addr, req->size, req->file_offset, 0);
+    } else if (req.op == hipFileBatchWrite) {
+        nbytes = hipFileWrite(req.fh, req.addr, req.size, req.file_offset, 0);
         if (nbytes < 0) {
-            NIXL_ERROR << "AIS_MT: hipFileWrite failed: " << strerror(errno);
-            overall_status->store(NIXL_ERR_BACKEND);
-            return;
+            reportOpError("AIS_MT: hipFileWrite failed: ", nbytes);
+            return NIXL_ERR_BACKEND;
         }
     } else {
-        overall_status->store(NIXL_ERR_INVALID_PARAM);
-        return;
+        return NIXL_ERR_INVALID_PARAM;
     }
 
-    if ((size_t)nbytes != req->size) {
+    if (size_t(nbytes) != req.size) {
         NIXL_ERROR << "AIS_MT: error: short "
-                   << ((req->op == hipFileBatchRead) ? "read: " : "write: ") << nbytes << " out of "
-                   << req->size << " bytes - address=" << req->addr;
-        overall_status->store(NIXL_ERR_BACKEND);
-        return;
-    }
-}
-
-nixl_status_t
-extractTransferParams(
-    const nixlMetaDesc &mem_desc,
-    const nixlMetaDesc &file_desc,
-    const std::unordered_map<int, std::weak_ptr<aisMtFileHandle>> &file_map,
-    void *&base_addr,
-    size_t &total_size,
-    size_t &base_offset,
-    hipFileHandle_t &hip_fhandle) {
-    base_addr = (void *)mem_desc.addr;
-    total_size = mem_desc.len;
-    base_offset = (size_t)file_desc.addr;
-
-    auto it = file_map.find(file_desc.devId);
-    if (it == file_map.end()) {
-        NIXL_ERROR << "AIS_MT: error: file metadata not found";
-        return NIXL_ERR_NOT_FOUND;
+                   << ((req.op == hipFileBatchRead) ? "read: " : "write: ") << nbytes << " out of "
+                   << req.size << " bytes - address=" << req.addr;
+        return NIXL_ERR_BACKEND;
     }
 
-    auto handle = it->second.lock();
-    NIXL_ASSERT(handle);
-    hip_fhandle = handle->hip_fhandle;
     return NIXL_SUCCESS;
 }
+
+static
+const FileSegData &getRegisteredFile(const nixlMetaDesc &desc)
+{
+  auto *ais_metadata = static_cast<const nixlAisMtMetadata *>(desc.metadataP);
+  auto *ais_fileseg = std::get_if<FileSegData>(ais_metadata? &ais_metadata->data_ : nullptr);
+  if (!ais_fileseg)
+    throw std::runtime_error("Unexpected: file metadata was not found in transfer request");
+  return *ais_fileseg;
+}
+
+static
+const MemSegData &getRegisteredBuffer(const nixlMetaDesc &desc)
+{
+  auto *ais_metadata = static_cast<const nixlAisMtMetadata *>(desc.metadataP);
+  auto *ais_memseg = std::get_if<MemSegData>(ais_metadata? &ais_metadata->data_ : nullptr);
+  if (!ais_memseg)
+    throw std::runtime_error("Unexpected: mem metadata was not found in transfer request");
+  return *ais_memseg;
+}
+
 } // namespace
+
+nixlAisMtBackendReqH::nixlAisMtBackendReqH(std::vector<AisMtTransferRequestH> list) :
+  request_list(std::move(list)),
+  taskflow(),
+  running_transfer()
+{
+}
 
 nixlAisMtBackendReqH::~nixlAisMtBackendReqH() {
     if (running_transfer.valid()) {
         running_transfer.wait();
     }
+}
+
+nixl_status_t
+runHipFileOp(AisMtTransferRequestH &req);
+
+nixl_status_t
+nixlAisMtBackendReqH::run() {
+  for (AisMtTransferRequestH &req : request_list) {
+    nixl_status_t status = runHipFileOp(req);
+    if (status != NIXL_SUCCESS) {
+      return status;
+    }
+  }
+  return NIXL_SUCCESS;
 }
 
 nixlAisMtEngine::nixlAisMtEngine(const nixlBackendInitParams *init_params)
@@ -202,8 +235,8 @@ nixlAisMtEngine::nixlAisMtEngine(const nixlBackendInitParams *init_params)
 
 nixl_status_t
 nixlAisMtEngine::registerMem(const nixlBlobDesc &mem,
-                                    const nixl_mem_t &nixl_mem,
-                                    nixlBackendMD *&out) {
+                             const nixl_mem_t &nixl_mem,
+                             nixlBackendMD *&out) {
     switch (nixl_mem) {
     case FILE_SEG: {
         auto it = ais_mt_file_map_.find(mem.devId);
@@ -241,7 +274,7 @@ nixlAisMtEngine::registerMem(const nixlBlobDesc &mem,
 
     case DRAM_SEG: {
         try {
-            out = new nixlAisMtMetadata((void *)mem.addr, mem.len, 0);
+            out = new nixlAisMtMetadata(std::bit_cast<void *>(mem.addr), mem.len, 0);
             return NIXL_SUCCESS;
         }
         catch (const std::exception &e) {
@@ -257,7 +290,7 @@ nixlAisMtEngine::registerMem(const nixlBlobDesc &mem,
 
 nixl_status_t
 nixlAisMtEngine::deregisterMem(nixlBackendMD *meta) {
-    std::unique_ptr<nixlAisMtMetadata> md((nixlAisMtMetadata *)meta);
+    std::unique_ptr<nixlAisMtMetadata> md(static_cast<nixlAisMtMetadata *>(meta));
 
     if (auto *file_data = std::get_if<FileSegData>(&md->data_)) {
         if (file_data->handle) {
@@ -281,7 +314,6 @@ nixlAisMtEngine::prepXfer(const nixl_xfer_op_t &operation,
                                  const std::string &remote_agent,
                                  nixlBackendReqH *&handle,
                                  const nixl_opt_b_args_t *opt_args) const {
-    auto ais_mt_handle = std::make_unique<nixlAisMtBackendReqH>();
     size_t buf_cnt = local.descCount();
     size_t file_cnt = remote.descCount();
 
@@ -297,63 +329,33 @@ nixlAisMtEngine::prepXfer(const nixl_xfer_op_t &operation,
         return NIXL_ERR_INVALID_PARAM;
     }
 
-    ais_mt_handle->request_list.clear();
+    std::vector<AisMtTransferRequestH> request_list;
     bool is_local_file = (local.getType() == FILE_SEG);
     for (size_t i = 0; i < buf_cnt; i++) {
-        void *base_addr;
-        size_t total_size;
-        size_t base_offset;
-        hipFileHandle_t hip_fhandle;
+        const nixlMetaDesc &mem_desc = is_local_file? remote[i] : local[i];
+        const nixlMetaDesc &file_desc = is_local_file? local[i] : remote[i];
 
-        nixl_status_t param_status;
-        if (is_local_file) {
-            param_status = extractTransferParams(remote[i],
-                                                 local[i],
-                                                 ais_mt_file_map_,
-                                                 base_addr,
-                                                 total_size,
-                                                 base_offset,
-                                                 hip_fhandle);
-        } else {
-            param_status = extractTransferParams(local[i],
-                                                 remote[i],
-                                                 ais_mt_file_map_,
-                                                 base_addr,
-                                                 total_size,
-                                                 base_offset,
-                                                 hip_fhandle);
-        }
+        const int dev_id = mem_desc.devId;
+        const MemSegData &mem_segment = getRegisteredBuffer(mem_desc);
+        const FileSegData &file_segment = getRegisteredFile(file_desc);
 
-        if (param_status != NIXL_SUCCESS) {
-            return param_status;
-        }
-
-        const int dev_id = is_local_file ? remote[i].devId : local[i].devId;
-
-        ais_mt_handle->request_list.emplace_back(
-            base_addr,
-            total_size,
-            base_offset,
-            hip_fhandle,
+        size_t buffer_offset = std::bit_cast<const char *>(mem_desc.addr)
+                             - static_cast<const char *>(mem_segment.buf->getBaseAddr());
+        request_list.emplace_back(
+            mem_segment.buf->getBaseAddr(),
+            mem_desc.len,
+            buffer_offset,
+            file_desc.addr,
+            file_segment.handle->hip_fhandle,
             (operation == NIXL_READ) ? hipFileBatchRead : hipFileBatchWrite,
             dev_id);
     }
 
-    if (ais_mt_handle->request_list.empty()) {
+    if (request_list.empty()) {
         return NIXL_ERR_INVALID_PARAM;
     }
-    ais_mt_handle->taskflow.emplace(
-        [reqs = &ais_mt_handle->request_list,
-         overall_status = &ais_mt_handle->overall_status]() {
-            for (AisMtTransferRequestH &req : *reqs) {
-                if (overall_status->load() != NIXL_SUCCESS) {
-                    return;
-                }
-                runHipFileOp(&req, overall_status);
-            }
-        });
 
-    handle = ais_mt_handle.release();
+    handle = new nixlAisMtBackendReqH(std::move(request_list));
     return NIXL_SUCCESS;
 }
 
@@ -365,9 +367,7 @@ nixlAisMtEngine::postXfer(const nixl_xfer_op_t &operation,
                                  nixlBackendReqH *&handle,
                                  const nixl_opt_b_args_t *opt_args) const {
     nixlAisMtBackendReqH *ais_mt_handle = (nixlAisMtBackendReqH *)handle;
-
-    ais_mt_handle->overall_status.store(NIXL_SUCCESS);
-    ais_mt_handle->running_transfer = executor_->run(ais_mt_handle->taskflow);
+    ais_mt_handle->running_transfer = executor_->async(std::bind(&nixlAisMtBackendReqH::run, ais_mt_handle));
     return NIXL_IN_PROG;
 }
 
@@ -378,7 +378,8 @@ nixlAisMtEngine::checkXfer(nixlBackendReqH *handle) const {
         std::future_status::ready) {
         return NIXL_IN_PROG;
     }
-    ais_mt_handle->running_transfer.get();
+    
+    nixl_status_t result = ais_mt_handle->running_transfer.get();
 
     std::unordered_set<int> devices;
     for (const AisMtTransferRequestH &req : ais_mt_handle->request_list) {
@@ -401,7 +402,7 @@ nixlAisMtEngine::checkXfer(nixlBackendReqH *handle) const {
         }
     }
 
-    return ais_mt_handle->overall_status.load();
+    return result;
 }
 
 nixl_status_t

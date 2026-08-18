@@ -40,9 +40,12 @@ public:
     aisMtMemBuf &
     operator=(aisMtMemBuf &&) = delete;
 
+    hipMemoryType memoryType() const { return type; }
+
+    void *getBaseAddr() const { return base_; }
 private:
     void *base_{nullptr};
-    bool registered_{false};
+    hipMemoryType type{hipMemoryTypeUnregistered};
 };
 
 class aisMtUtil {

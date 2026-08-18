@@ -36,26 +36,46 @@ aisMtUtil::~aisMtUtil() {
 }
 
 aisMtMemBuf::aisMtMemBuf(void *ptr, size_t sz, int flags) : base_(ptr) {
-    const hipFileError_t status = hipFileBufRegister(ptr, sz, flags);
-    if (status.err != hipFileSuccess) {
-        if (aisMtCompatModeAllowed()) {
-            NIXL_WARN << "AIS_MT: buffer registration failed - compat mode: err="
-                      << status.err;
-            return;
-        }
-        throw std::runtime_error(
-            "AIS_MT: hipFileBufRegister failed (err=" + std::to_string(status.err) +
-            "); set HIPFILE_ALLOW_COMPAT_MODE=true to allow fallback");
+    hipError_t err;
+    hipPointerAttribute_t attr;
+    err = hipPointerGetAttributes(&attr, ptr);
+    if (err != hipSuccess || attr.type == hipMemoryTypeUnregistered) {
+        // Unregistered memory is host memory
+        err = hipHostRegister(ptr, sz, hipHostRegisterDefault);
+
+        type = hipMemoryTypeHost;
     }
-    registered_ = true;
+    else {
+        type = hipMemoryTypeDevice;
+
+        hipFileError_t status = hipFileBufRegister(ptr, sz, flags);
+        if (status.err != hipFileSuccess) {
+            const char *err_description{HIPFILE_ERRSTR(status.err)};
+            if (aisMtCompatModeAllowed()) {
+                NIXL_WARN << "AIS_MT: buffer registration failed - compat mode: "
+                    << err_description;
+            } else {
+                throw std::runtime_error(
+                        "AIS_MT: hipFileBufRegister failed (" + std::string(err_description) +
+                        "); set HIPFILE_ALLOW_COMPAT_MODE=true to allow fallback");
+            }
+        }
+    }
 }
 
 aisMtMemBuf::~aisMtMemBuf() {
-    if (registered_) {
+    if (type == hipMemoryTypeHost) {
+        const hipError_t err = hipHostUnregister(base_);
+        if (err != hipSuccess) {
+            NIXL_WARN << "AIS_MT: warning: deregistering buffer error: " << hipGetErrorString(err)
+                      << "; ptr=" << base_;
+        }
+    }
+    if (type == hipMemoryTypeDevice) {
         const hipFileError_t status = hipFileBufDeregister(base_);
         if (status.err != hipFileSuccess) {
-            NIXL_WARN << "AIS_MT: warning: deregistering buffer: error=" << status.err
-                      << " ptr=" << base_;
+            NIXL_WARN << "AIS_MT: warning: deregistering buffer error: " << hipFileGetOpErrorString(status.err)
+                      << "; ptr=" << base_;
         }
     }
 }
